@@ -1,52 +1,122 @@
-# Automated Weather ETL Pipeline
+# Automated Weather ETL Pipeline (v1 & v2)
 
-A production-grade, automated ETL pipeline that ingests real-time weather data for 5 major Indian metros every 15 minutes, stores it in a structured time-series database, and supports SQL analytics.
+A production-grade, fault-tolerant ETL pipeline ingesting real-time meteorological data across 5 major Indian metropolitan areas, demonstrating progression from basic local scheduling (v1) to enterprise-grade workflow orchestration with Apache Airflow and PostgreSQL (v2).
 
-## Architecture
+---
 
-REST API (Open-Meteo) → Extract → Transform → Load → SQLite Database
-                                                           |
-                                                Scheduled every 15 minutes
+## Architecture Evolution
 
-## Tech Stack
+### v1 Architecture (Baseline)
+```
+Open-Meteo REST API -> Python Extraction -> Pandas Transformation -> SQLite Storage -> Schedule Library
+```
 
-- Python — Core pipeline logic
-- Pandas — Data transformation and enrichment
-- SQLite — Persistent time-series storage
-- Schedule — Automated pipeline orchestration
-- Open-Meteo REST API — Real-time weather data (no API key required)
+### v2 Architecture (Enterprise Grade)
+```
+Open-Meteo REST API
+        |
+        v
+[Apache Airflow DAG]
+  |-- Task 1: extract (isolated API extraction with automated retries)
+  |-- Task 2: transform (Celsius to Fahrenheit enrichment & typing)
+  |-- Task 3: load (idempotent batch UPSERT via psycopg2 into PostgreSQL)
+  \-- Task 4: quality_check (asserts zero nulls and non-empty warehouse state)
+        |
+        v
+PostgreSQL Relational Warehouse (WSL2)
+```
 
-## Features
+---
 
-- Fault-tolerant extraction with per-city error handling
-- Schema evolution via ALTER TABLE for new columns
-- Data enrichment (Celsius to Fahrenheit conversion)
-- Structured logging with timestamps and log levels
-- Duplicate-safe loading using append strategy
-- SQL analytics with Window Functions and CTEs
+## Tech Stack Comparison
 
-## Version Roadmap
+| Feature | v1 (Baseline) | v2 (Production Standard) |
+| :--- | :--- | :--- |
+| **Orchestration** | Python schedule loop | **Apache Airflow DAG** (Airflow 3 / 2.9+) |
+| **Storage Engine** | SQLite (file-based) | **PostgreSQL 18** (Relational RDBMS) |
+| **Execution Environment** | Windows native script | **WSL2 (Linux)** isolated virtual environment |
+| **Data Ingestion** | Full file append | **Idempotent batch load** (ON CONFLICT DO NOTHING) |
+| **Fault Tolerance** | Script-level try/except | **Task-level retries**, SLA tracking & UI monitoring |
+| **Data Quality** | Manual inspection | **Automated post-load assertion checks** |
 
-| Version | Status | Stack |
-|---------|--------|-------|
-| v1 — SQLite + Scheduler | Complete | Python, Pandas, SQLite |
-| v2 — PostgreSQL + Airflow | In Progress | PostgreSQL, Apache Airflow, WSL2 |
+---
 
-## Quick Start
+## Project Structure
 
-pip install -r requirements.txt
-python v1/pipeline.py
+```
+data_pipeline/
+|-- v1/
+|   |-- pipeline.py         # SQLite + Schedule pipeline
+|   |-- analyze.py          # SQLite window function analytics
+|   \-- requirements.txt
+|-- v2/
+|   |-- weather_etl_dag.py  # Production Apache Airflow DAG
+|   |-- schema.sql          # PostgreSQL DDL with composite primary key
+|   |-- analyze_v2.py       # PostgreSQL CTE & window function analytics
+|   \-- requirements.txt
+\-- README.md
+```
 
-## Sample Analytics Query
+---
 
+## Database Schema (v2 PostgreSQL)
+
+```sql
+CREATE TABLE IF NOT EXISTS weather_history (
+    city VARCHAR(50) NOT NULL,
+    time_stamp TIMESTAMP NOT NULL,
+    temperature NUMERIC(4, 1) NOT NULL,
+    temp_f NUMERIC(4, 1) NOT NULL,
+    windspeed NUMERIC(4, 1) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (city, time_stamp)
+);
+
+CREATE INDEX IF NOT EXISTS idx_weather_history_timestamp ON weather_history(time_stamp DESC);
+```
+
+---
+
+## Quick Start (v2)
+
+### 1. Database Setup
+```bash
+sudo service postgresql start
+psql -U preet -d weather_db -f v2/schema.sql
+```
+
+### 2. Airflow Deployment
+```bash
+cp v2/weather_etl_dag.py ~/airflow/dags/
+airflow standalone
+```
+Navigate to `http://localhost:8080`, unpause `weather_etl_pipeline_v2`, and trigger execution.
+
+### 3. Run Analytics
+```bash
+python3 v2/analyze_v2.py
+```
+
+---
+
+## Sample Analytical Query (Latest Metros Snapshot)
+
+```sql
 WITH RankedWeather AS (
-    SELECT *,
+    SELECT 
+        city,
+        time_stamp,
+        temperature,
+        temp_f,
+        windspeed,
         ROW_NUMBER() OVER (
-            PARTITION BY City
-            ORDER BY Time_Stamp DESC
+            PARTITION BY city 
+            ORDER BY time_stamp DESC
         ) AS rn
     FROM weather_history
 )
-SELECT City, Time_Stamp, Temperature, Temp_F, WindSpeed
+SELECT city, time_stamp, temperature, temp_f, windspeed
 FROM RankedWeather
-WHERE rn = 1;
+WHERE rn = 1
+ORDER BY temperature DESC;
+```
